@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING, Any, Self
 from w3lib.url import canonicalize_url
 
 from scrapy import signals
-from scrapy.exceptions import IgnoreRequest, NotConfigured, ScrapyDeprecationWarning
+from scrapy.exceptions import (
+    IgnoreRequest,
+    NotConfigured,
+    RedirectLoopError,
+    ScrapyDeprecationWarning,
+)
 from scrapy.http import HtmlResponse, Response
 from scrapy.spidermiddlewares.referer import RefererMiddleware
 from scrapy.utils.decorators import _warn_spider_arg
@@ -49,6 +54,39 @@ class BaseRedirectMiddleware:
         o.crawler = crawler
         crawler.signals.connect(o._spider_opened, signal=signals.spider_opened)
         return o
+
+    def _is_redirect_loop(self, redirected: Request, request: Request) -> bool:
+        """Return whether *redirected* points back to a URL that the
+        redirection chain of *request* already visited.
+
+        The visited URLs are the original request URL and every redirect
+        source, recorded in the ``redirect_urls`` meta key, plus the URL of
+        *request* itself, which is the target of the previous redirect and is
+        not stored in ``redirect_urls`` yet.
+
+        The URL scheme and its canonical form are both compared:
+        :func:`~w3lib.url.canonicalize_url` drops the scheme, so without the
+        extra check an ``http://`` to ``https://`` redirect (or the reverse)
+        would be mistaken for a loop. Override this method to use a different
+        comparison.
+        """
+        parsed_target = urlparse_cached(redirected)
+        target = (
+            parsed_target.scheme,
+            canonicalize_url(redirected.url),
+        )
+        visited_urls = [
+            *request.meta.get("redirect_urls", []),
+            request.url,
+        ]
+        return any(
+            target
+            == (
+                urlparse_cached(url).scheme,
+                canonicalize_url(url),
+            )
+            for url in visited_urls
+        )
 
     def handle_referer(self, request: Request, response: Response) -> None:
         """Remove, modify or keep the Referer header of *request* based on the
@@ -99,6 +137,20 @@ class BaseRedirectMiddleware:
     ) -> Request:
         ttl = request.meta.setdefault("redirect_ttl", self.max_redirect_times)
         redirects = request.meta.get("redirect_times", 0) + 1
+
+        # The target URL is already part of this request's redirection chain,
+        # so following it would loop. Detecting it here, rather than letting
+        # the duplicate request filter silently drop the new request, makes the
+        # drop observable: it reaches the errback as RedirectLoopError and is
+        # counted in the redirect/loop_count stat.
+        if self._is_redirect_loop(redirected, request):
+            logger.debug(
+                "Discarding %(request)s: redirect loop at %(url)s",
+                {"request": request, "url": redirected.url},
+                extra={"spider": self.crawler.spider},
+            )
+            self.crawler.stats.inc_value("redirect/loop_count")
+            raise RedirectLoopError(redirected.url)
 
         if ttl and redirects <= self.max_redirect_times:
             redirected.meta["redirect_times"] = redirects

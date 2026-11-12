@@ -36,11 +36,13 @@ from .http_resources import (
     H2Raw,
     H2ResetStream,
     HostHeaderResource,
+    InfiniteRedirect,
     LargeChunkedFileResource,
     NoMetaRefreshRedirect,
     Partial,
     PayloadResource,
     Raw,
+    RedirectLoop,
     RedirectTo,
     ResponseHeadersResource,
     SetCookie,
@@ -69,6 +71,8 @@ class Root(BaseResource):
         put_child(self, b"alpayload", ArbitraryLengthPayloadResource())
         put_child(self, b"static", File(str(Path(tests_datadir, "test_site/"))))
         put_child(self, b"redirect-to", RedirectTo())
+        put_child(self, b"redirect-loop", RedirectLoop())
+        put_child(self, b"infinite-redirect", InfiniteRedirect())
         put_child(self, b"created", Created())
         put_child(self, b"text", Data(b"Works", "text/plain"))
         put_child(self, b"connection-id", ConnectionId())

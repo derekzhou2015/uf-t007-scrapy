@@ -644,6 +644,17 @@ one per actual value of the placeholder.
 
     Set by :class:`~scrapy.spidermiddlewares.depth.DepthMiddleware`.
 
+.. stat:: redirect/loop_count
+
+``redirect/loop_count``
+    Number of requests whose redirection chain looped back to a URL it had
+    already visited. Such requests are not handed to the duplicate request
+    filter, they raise :exc:`~scrapy.exceptions.RedirectLoopError`, which
+    reaches the request errback, instead.
+
+    Set by :class:`~scrapy.downloadermiddlewares.redirect.RedirectMiddleware`
+    and :class:`~scrapy.downloadermiddlewares.redirect.MetaRefreshMiddleware`.
+
 .. stat:: response_max_active_size/bypass_count
 
 ``response_max_active_size/bypass_count``

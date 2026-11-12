@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from scrapy.downloadermiddlewares.httpproxy import HttpProxyMiddleware
-from scrapy.exceptions import IgnoreRequest
+from scrapy.exceptions import IgnoreRequest, RedirectLoopError
 from scrapy.http import Request, Response
 from scrapy.utils.misc import build_from_crawler, set_environ
 from scrapy.utils.test import get_crawler
@@ -113,6 +113,73 @@ class TestRedirectBase(ABC):
         assert isinstance(req, Request)
         with pytest.raises(IgnoreRequest):
             self.mw.process_response(req, rsp)
+
+    def test_redirect_loop_to_original_url(self):
+        """A redirect back to the URL that started the chain raises
+        RedirectLoopError instead of producing a request the dupefilter would
+        silently drop."""
+        original_url = "http://a.example/first"
+        req = Request(original_url)
+        rsp = self.get_response(req, "http://a.example/second")
+
+        req = self.mw.process_response(req, rsp)
+        assert isinstance(req, Request)
+        assert req.url == "http://a.example/second"
+
+        loop_rsp = self.get_response(req, original_url)
+        with pytest.raises(RedirectLoopError) as exc_info:
+            self.mw.process_response(req, loop_rsp)
+        assert exc_info.value.url == original_url
+        # It is an IgnoreRequest, so code catching IgnoreRequest keeps working.
+        assert isinstance(exc_info.value, IgnoreRequest)
+        # The loop is reported through a dedicated stat, not the dupefilter.
+        assert self.mw.crawler.stats.get_value("redirect/loop_count") == 1
+        assert self.mw.crawler.stats.get_value("dupefilter/filtered") is None
+
+    def test_redirect_loop_to_intermediate_url(self):
+        """A loop back to any URL already visited within the chain, not just
+        the original one, is detected."""
+        req = Request("http://a.example/first")
+        req = self.mw.process_response(
+            req, self.get_response(req, "http://a.example/second")
+        )
+        assert isinstance(req, Request)
+        req = self.mw.process_response(
+            req, self.get_response(req, "http://a.example/third")
+        )
+        assert isinstance(req, Request)
+
+        loop_rsp = self.get_response(req, "http://a.example/second")
+        with pytest.raises(RedirectLoopError):
+            self.mw.process_response(req, loop_rsp)
+        assert self.mw.crawler.stats.get_value("redirect/loop_count") == 1
+
+    def test_redirect_loop_takes_precedence_over_max_times(self):
+        """A loop raises RedirectLoopError even if the redirect limit has not
+        been reached, and never reaches the IgnoreRequest max-times path."""
+        self.mw.max_redirect_times = 20
+        original_url = "http://a.example/first"
+        req = Request(original_url)
+        req = self.mw.process_response(
+            req, self.get_response(req, "http://a.example/second")
+        )
+        assert isinstance(req, Request)
+        with pytest.raises(RedirectLoopError):
+            self.mw.process_response(req, self.get_response(req, original_url))
+
+    def test_non_looping_chain_does_not_raise(self):
+        """Chains whose URLs keep changing are unaffected by loop detection:
+        they still hit the max-redirections IgnoreRequest path."""
+        self.mw.max_redirect_times = 1
+        req = Request("http://a.example/0")
+        rsp = self.get_response(req, "http://a.example/1")
+
+        req = self.mw.process_response(req, rsp)
+        assert isinstance(req, Request)
+        rsp = self.get_response(req, "http://a.example/2")
+        with pytest.raises(IgnoreRequest, match="max redirections reached"):
+            self.mw.process_response(req, rsp)
+        assert self.mw.crawler.stats.get_value("redirect/loop_count") is None
 
     def test_redirect_urls(self):
         req1 = Request("http://a.example/first")
@@ -283,7 +350,9 @@ class TestRedirectBase(ABC):
             assert_proxy(request3, expected[4])
 
     # A proxy set through Request.meta is kept on redirects, even on
-    # cross-scheme ones.
+    # cross-scheme ones. The cross-scheme cases end on a distinct path
+    # ("/b") rather than back at the start URL, which would be a redirect
+    # loop that now raises RedirectLoopError instead of being followed.
     @pytest.mark.parametrize(
         ("url", "location1", "location2"),
         [
@@ -304,13 +373,13 @@ class TestRedirectBase(ABC):
             pytest.param(
                 "http://example.com",
                 "https://example.com",
-                "http://example.com",
+                "http://example.com/b",
                 id="http-to-https",
             ),
             pytest.param(
                 "https://example.com",
                 "http://example.com",
-                "https://example.com",
+                "https://example.com/b",
                 id="https-to-http",
             ),
         ],
@@ -368,7 +437,7 @@ class TestRedirectBase(ABC):
                 {"http_proxy": PROXY_A, "no_proxy": "internal.example"},
                 "http://example.com",
                 "http://internal.example",
-                "http://example.com",
+                "http://example.com/b",
                 ("a", None, None, None, "a"),
                 id="http-to-no-proxy-http",
             ),
@@ -376,7 +445,7 @@ class TestRedirectBase(ABC):
                 {"https_proxy": PROXY_A, "no_proxy": "internal.example"},
                 "https://example.com",
                 "https://internal.example",
-                "https://example.com",
+                "https://example.com/b",
                 ("a", None, None, None, "a"),
                 id="https-to-no-proxy-https",
             ),
@@ -384,7 +453,7 @@ class TestRedirectBase(ABC):
                 {"http_proxy": PROXY_A, "https_proxy": PROXY_B},
                 "http://example.com",
                 "https://example.com",
-                "http://example.com",
+                "http://example.com/b",
                 ("a", None, "b", None, "a"),
                 id="proxied-http-to-proxied-https",
             ),
@@ -392,7 +461,7 @@ class TestRedirectBase(ABC):
                 {"http_proxy": PROXY_A},
                 "http://example.com",
                 "https://example.com",
-                "http://example.com",
+                "http://example.com/b",
                 ("a", None, None, None, "a"),
                 id="proxied-http-to-unproxied-https",
             ),
@@ -400,7 +469,7 @@ class TestRedirectBase(ABC):
                 {"https_proxy": PROXY_B},
                 "http://example.com",
                 "https://example.com",
-                "http://example.com",
+                "http://example.com/b",
                 (None, None, "b", None, None),
                 id="unproxied-http-to-proxied-https",
             ),
@@ -408,7 +477,7 @@ class TestRedirectBase(ABC):
                 {},
                 "http://example.com",
                 "https://example.com",
-                "http://example.com",
+                "http://example.com/b",
                 (None, None, None, None, None),
                 id="unproxied-http-to-unproxied-https",
             ),
@@ -416,7 +485,7 @@ class TestRedirectBase(ABC):
                 {"http_proxy": PROXY_A, "https_proxy": PROXY_B},
                 "https://example.com",
                 "http://example.com",
-                "https://example.com",
+                "https://example.com/b",
                 ("b", None, "a", None, "b"),
                 id="proxied-https-to-proxied-http",
             ),
@@ -424,7 +493,7 @@ class TestRedirectBase(ABC):
                 {"https_proxy": PROXY_B},
                 "https://example.com",
                 "http://example.com",
-                "https://example.com",
+                "https://example.com/b",
                 ("b", None, None, None, "b"),
                 id="proxied-https-to-unproxied-http",
             ),
@@ -432,7 +501,7 @@ class TestRedirectBase(ABC):
                 {"http_proxy": PROXY_A},
                 "https://example.com",
                 "http://example.com",
-                "https://example.com",
+                "https://example.com/b",
                 (None, None, "a", None, None),
                 id="unproxied-https-to-proxied-http",
             ),
@@ -440,7 +509,7 @@ class TestRedirectBase(ABC):
                 {},
                 "https://example.com",
                 "http://example.com",
-                "https://example.com",
+                "https://example.com/b",
                 (None, None, None, None, None),
                 id="unproxied-https-to-unproxied-http",
             ),

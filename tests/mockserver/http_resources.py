@@ -296,6 +296,32 @@ class RedirectTo(LeafResource):
         return b"redirecting..."
 
 
+class RedirectLoop(LeafResource):
+    """Redirect every request to the other one of two fixed paths, so that a
+    client following redirects loops between them: ``/redirect-loop/a`` ->
+    ``/redirect-loop/b`` -> ``/redirect-loop/a`` -> ..."""
+
+    def render(self, request: Request) -> bytes:
+        assert request.postpath is not None
+        current = request.postpath[-1]
+        target = b"/redirect-loop/b" if current == b"a" else b"/redirect-loop/a"
+        request.setResponseCode(302)
+        request.setHeader(b"Location", target)
+        return b"redirecting..."
+
+
+class InfiniteRedirect(LeafResource):
+    """Redirect to a new, unique path on every request, so that following
+    redirects never loops but eventually reaches REDIRECT_MAX_TIMES."""
+
+    def render(self, request: Request) -> bytes:
+        assert request.postpath is not None
+        target = b"/infinite-redirect/" + str(int(request.postpath[-1]) + 1).encode()
+        request.setResponseCode(302)
+        request.setHeader(b"Location", target)
+        return b"redirecting..."
+
+
 class Created(LeafResource):
     """Emulate a server that creates a resource on the fly, reporting it with an
     empty 201 response that points at the created resource through Location."""

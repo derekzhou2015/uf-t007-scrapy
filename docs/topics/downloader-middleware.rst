@@ -946,6 +946,17 @@ initialized from :setting:`REDIRECT_MAX_TIMES` and decreased on every redirect.
 Set it on a request to allow fewer redirects for that request;
 :setting:`REDIRECT_MAX_TIMES` still applies as an upper bound.
 
+If a redirect points back to a URL that the request has already visited within
+its redirection chain, the chain is looping. The middleware detects this from
+:reqmeta:`redirect_urls` and raises
+:exc:`~scrapy.exceptions.RedirectLoopError`, instead of producing a request
+that the :ref:`duplicate request filter <topics-scheduler>` would drop
+silently. The exception reaches the request errback and the
+:stat:`redirect/loop_count` stat is increased, so such drops can be detected
+and handled. Redirection chains that keep changing URLs still end with an
+:exc:`~scrapy.exceptions.IgnoreRequest` ("max redirections reached") once
+:setting:`REDIRECT_MAX_TIMES` is reached.
+
 The :class:`RedirectMiddleware` can be configured through the following
 settings (see the settings documentation for more info):
 

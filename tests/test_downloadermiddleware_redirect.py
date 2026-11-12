@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from scrapy.downloadermiddlewares.redirect import RedirectMiddleware
-from scrapy.exceptions import NotConfigured
+from scrapy.exceptions import NotConfigured, RedirectLoopError
 from scrapy.http import BodyFileResponse, Request, Response
 from scrapy.spidermiddlewares.referer import (
     POLICY_NO_REFERRER,
@@ -318,6 +318,18 @@ class TestRedirectMiddleware(TestRedirectBase):
         assert isinstance(req2, Request)
         assert req2.url == url3
         assert req2.method == "HEAD"
+
+    def test_redirect_loop_self_redirect(self):
+        """A response that redirects a request straight back to its own URL is
+        detected on the first hop."""
+        url = "http://www.example.com/self"
+        req = Request(url)
+        rsp = self.get_response(req, url)
+        with pytest.raises(RedirectLoopError) as exc_info:
+            self.mw.process_response(req, rsp)
+        assert exc_info.value.url == url
+        assert self.mw.crawler.stats.get_value("redirect/loop_count") == 1
+        assert self.mw.crawler.stats.get_value("dupefilter/filtered") is None
 
     def test_spider_handling(self):
         self.mw.crawler.spider.handle_httpstatus_list = [404, 301, 302]

@@ -50,6 +50,26 @@ class IgnoreRequest(Exception):
     :ref:`scheduler <topics-scheduler>`."""
 
 
+class RedirectLoopError(IgnoreRequest):
+    """Raised when following a redirection leads back to a URL that the
+    redirection chain of the request already visited, i.e. when the chain
+    loops. It is raised by
+    :class:`~scrapy.downloadermiddlewares.redirect.BaseRedirectMiddleware`,
+    instead of letting the duplicate request filter silently drop the looping
+    request later, so that the request errback receives it and the
+    :stat:`redirect/loop_count` stat is increased.
+
+    As a subclass of :exc:`IgnoreRequest`, code that catches
+    :exc:`IgnoreRequest` keeps working unchanged.
+
+    .. versionadded:: 2.20.0
+    """
+
+    def __init__(self, url: str):
+        super().__init__(f"Redirect loop detected at {url!r}")
+        self.url = url
+
+
 class DontCloseSpider(Exception):
     """Raised in a :signal:`spider_idle` signal handler to prevent the spider
     from being closed."""
